@@ -8,15 +8,37 @@ const MEM_BEGIN : u16 = 0x200;
 const DISPLAY_REFRESH : u16 = 0xF00;
 const MISC : u16 = 0xEA0;
 
+const chip8_fontset : [u8; 80] =
+[
+  0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+  0x20, 0x60, 0x20, 0x20, 0x70, // 1
+  0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+  0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+  0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+  0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+  0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+  0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+  0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+  0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+  0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+  0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+  0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+  0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+  0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+  0xF0, 0x80, 0xF0, 0x80, 0x80  // F
+];
+
 #[derive(Debug)]
 struct CPU{
     registers : [u8; 16],
+    keys      : [u8; 16],
     address   : u16,
     pc_reg    : usize,
     delayTimer : Timer,
     soundTimer : Timer,
     stack      : Stack,
     memory     : Memory,
+    test       : bool
 }
 
 impl CPU{
@@ -24,12 +46,14 @@ impl CPU{
     fn new() -> Self{
         CPU {
             registers : [0; 16],
+            keys      : [0; 16],
             address   : 0,
             pc_reg    : 0x200,
             delayTimer : Timer::default(),
             soundTimer : Timer::default(),
             memory     : Memory::default(),
             stack      : Stack::default(),
+            test       : false,
         }
     }
 
@@ -39,6 +63,30 @@ impl CPU{
             self.memory.ram[mem_start] = rom[i as usize];
             mem_start += 1;
         }
+
+        // also load font
+        for i in 0..chip8_fontset.len() {
+            self.memory.ram[i] = chip8_fontset[i];
+        }
+    }
+
+    pub fn run(&mut self){
+        self.next_instruction();
+        self.delayTimer.update();
+        self.soundTimer.update();
+    }
+
+    // 1 for down, 0 for up
+    pub fn set_key(&mut self, key_code : u8, up: u8){
+        self.keys[key_code as usize] = up; 
+    }
+
+    pub fn get_vram(&self) -> &Box<[u8]>{
+        &self.memory.vram
+    }
+
+    pub fn get_changed(&self) -> bool {
+        self.test
     }
 
     fn next_instruction(&mut self){
@@ -49,8 +97,6 @@ impl CPU{
         let bytecode = ((bytecode1 as u16) << 8) | bytecode2 as u16;
 
         self.decode_instruction(bytecode);
-
-        println!("{:#x} ", bytecode);
     }
 
     fn decode_instruction(&mut self, bytecode : u16){
@@ -89,7 +135,7 @@ impl CPU{
     fn deal_with_one_nibble_codes(&mut self, bytecode : u16){
         println!("jump!");
         let addr = bytecode & 0xFFF;
-        println!("addr {:#x}", addr);
+        //println!("addr {:#x}", addr);
         self.pc_reg = addr as usize;
     }
 
@@ -108,6 +154,7 @@ impl CPU{
         println!("skip next if vx == nn");
         let reg   = (bytecode >> 8) & 0xF;
         let value = bytecode  & 0xFF;
+        println!("reg {} has {:#x} and test against val {:#x}", reg, self.registers[reg as usize], value);
         if self.registers[reg as usize] == value as u8 {
             // skip!
             self.pc_reg += 2;
@@ -139,7 +186,7 @@ impl CPU{
         let reg   = (bytecode >> 8) & 0xF;
         let value = bytecode  & 0xFF;
         self.registers[reg as usize] = value as u8;
-        //println!("{:#?}", self.registers);
+        println!("register {} now holds {:#x}", reg, value);
     }
 
     fn deal_with_seven_nibble_codes(&mut self, bytecode : u16){
@@ -204,12 +251,36 @@ impl CPU{
 
     fn add_regs(&mut self, bytecode : u16){
         println!("add_regs!");
-        panic!();
+        let x = (bytecode >> 8) & 0xF;
+        let y = (bytecode >> 4) & 0xF;
+        let valX = self.registers[x as usize];
+        let valY = self.registers[y as usize];
+
+        if valX as u16 + valY as u16 > 0xFF {
+            //panic!("carry!");
+            self.registers[x as usize] = 0xFF;
+            self.registers[VF as usize] = 1;
+        }else{
+            self.registers[x as usize] += valY;
+            self.registers[VF as usize] = 0;
+        }
     }
 
     fn sub_regs(&mut self, bytecode : u16){
         println!("sub_regs!");
-        panic!();
+        let x = (bytecode >> 8) & 0xF;
+        let y = (bytecode >> 4) & 0xF;
+        let valX = self.registers[x as usize];
+        let valY = self.registers[y as usize];
+
+        if (valX as i16 - valY as i16) < 0 {
+            panic!("borrow!");
+            self.registers[x as usize] = 0x0;
+            self.registers[VF as usize] = 0;
+        }else{
+            self.registers[x as usize] -= valY;
+            self.registers[VF as usize] = 1;
+        }
     }
 
     fn store_and_shift(&mut self, bytecode : u16){
@@ -233,9 +304,17 @@ impl CPU{
         self.registers[reg as usize] = val << 1;
     }
             
-    fn deal_with_nine_nibble_codes(&self, bytecode : u16){
+    fn deal_with_nine_nibble_codes(&mut self, bytecode : u16){
         println!("deal_with_nine_nibble_codes!");
-        panic!();
+        let x = (bytecode >> 8) & 0xF;
+        let y = (bytecode >> 4) & 0xF;
+
+        let xVal = self.registers[x as usize];
+        let yVal = self.registers[y as usize];
+
+        if xVal != yVal {
+            self.pc_reg += 2;
+        }
     }
 
     fn deal_with_A_nibble_codes(&mut self, bytecode : u16){
@@ -253,10 +332,54 @@ impl CPU{
 
     fn deal_with_C_nibble_codes(&mut self, bytecode : u16){
         // todo
+        panic!();
     }
 
     fn deal_with_D_nibble_codes(&mut self, bytecode : u16){
-        // todo
+        println!("draw sprite");
+        let x = (bytecode >> 8) & 0xF;
+        let y = (bytecode >> 4) & 0xF;
+        let height = bytecode & 0xF;
+        
+        let mut start_address = self.address;
+
+        // get x 0ffset
+        let x_offset = x % 8;
+        let x_start = x >> 3;
+
+        let mut start_offset = y * 8 + x_start;
+        println!("{}", y);
+        let mut flipped = false;
+
+        for y in 0..height {
+            // xor the address val with the video ram
+            // get address value
+            let orig_byte = self.memory.ram[start_address as usize];
+            // create mask
+            let first_byte_source = orig_byte >> x_offset;
+            let second_byte_source = orig_byte << (8 - x_offset);
+
+            let first_byte_video = self.memory.vram[start_offset as usize];
+            let second_byte_video = self.memory.vram[(start_offset + 1) as usize];
+
+            self.memory.vram[start_offset as usize] ^= first_byte_source;            
+            self.memory.vram[(start_offset + 1) as usize] ^= second_byte_source; 
+
+            if self.memory.vram[start_offset as usize] != first_byte_video ||
+               self.memory.vram[(start_offset + 1) as usize] != second_byte_video {
+                   flipped = true;
+            }
+
+            start_offset += 8;
+            start_address += 1;
+        }
+
+        if flipped {
+            self.registers[VF as usize] = 1;
+        }else{
+            self.registers[VF as usize] = 0;
+        }
+
     }
 
     fn deal_with_E_nibble_codes(&mut self, bytecode : u16){
@@ -274,32 +397,68 @@ impl CPU{
         let byte = bytecode & 0xFF;
         match byte{
             0x07 => self.set_reg_to_delay(bytecode),
-            // 0x0A => ,
-            // 0x15 => ,
-            // 0x18 => ,
+               0x0A => self.await_key_press(bytecode),
+               0x15 => self.set_delay_timer(bytecode),
+               0x18 => self.set_sound_timer(bytecode),
                0x1E => self.add_vx_to_i(bytecode),
                0x29 => self.set_sprite_loc(bytecode),
-            // 0x33 => ,
+               0x33 => self.set_BCD(bytecode),
             0x55 => self.store_regs_in_memory(bytecode),
             0x65 => self.fill_regs(bytecode),
             _=> panic!()
         }
     }
 
+    fn await_key_press(&mut self, bytecode : u16){
+        println!("await keypress");
+        panic!();
+    }
+
+    fn set_BCD(&mut self, bytecode : u16){
+        println!("set BCD!");
+        let reg = (bytecode >> 8) & 0xF;
+        let mut value = self.registers[reg as usize];
+        let hundreds = value / 100;
+        value = value - hundreds * 100;
+        let mut address = self.address;
+        self.memory.ram[address as usize] = value;
+        address += 1;
+        let tens = value / 10;
+        self.memory.ram[address as usize] = tens;
+        address += 1;
+        value = value - tens * 10;
+        let digit = value;
+        self.memory.ram[address as usize] = digit;
+        panic!();
+    }
+
+    fn set_delay_timer(&mut self, bytecode: u16){
+        println!("set sound timer");
+        let reg = (bytecode >> 8) & 0xF;
+        self.delayTimer.count = self.registers[reg as usize];
+    }
+
+    fn set_sound_timer(&mut self, bytecode: u16){
+        println!("set sound timer");
+        let reg = (bytecode >> 8) & 0xF;
+        self.soundTimer.count = self.registers[reg as usize];
+    }
+
     fn set_sprite_loc(&mut self, bytecode : u16){
         println!("set sprite location");
         let reg = (bytecode >> 8) & 0xF;
         let character = self.registers[reg as usize];
-        // TODO
+        self.address = (character * 0x5) as u16;
     }
 
     fn fill_regs(&mut self, bytecode : u16){
-        println!("fill regs!");
+        println!("fill regs! {:#x}", bytecode);
         let end = (bytecode >> 8) & 0xF;
         let mut addr = self.address;
-        for i in 0.. end {
+        for i in 0..=end {
             self.registers[i as usize] = self.memory.ram[addr as usize];
             addr += 1;
+            println!("reg {} out of {}", i, end);
         }
     }
 
@@ -311,25 +470,35 @@ impl CPU{
         self.address += (val as u16);
 
         if self.address > 0xFFF {
+            println!("carry");
             self.registers[15 as usize] = 1;
         }else{
+            println!("no carry");
             self.registers[15 as usize] = 0;
         }
     }
 
     fn call_program(&mut self, bytecode : u16){
         println!("call program at addr {:#x}", bytecode & 0xFFF);
+        panic!();
     }
 
     fn clear_screen(&mut self) {
         println!("clear screen!");
+        let num_bytes = 8 * 4;
+        for i in 0..num_bytes {
+            self.memory.vram[i as usize] = 0;
+        }
     }
 
     fn skip_instruction_if_key_pressed(&mut self, bytecode: u16){
         println!("skip instruction if key pressed!");
         let reg = (bytecode >> 8) & 0xF;
         let keyStored = self.registers[reg as usize];
-
+        if self.keys[keyStored as usize] == 1 {
+            self.pc_reg += 2;
+        }
+        println!("key {}!", reg);
         //check key val
     }
 
@@ -338,6 +507,11 @@ impl CPU{
 
         let reg = (bytecode >> 8) & 0xF;
         let keyStored = self.registers[reg as usize];
+        if self.keys[keyStored as usize] == 0 {
+            println!("skipping");
+            self.pc_reg += 2;
+        }
+        println!("key {}!", reg);
     }
 
     fn return_from_subroutine(&mut self) {
@@ -345,7 +519,6 @@ impl CPU{
         println!("return from subroutine");
         self.stack.stackpointer -= 1;
         let addr = self.stack.addresses[self.stack.stackpointer as usize];
-        println!("{:#x}", addr);
         self.pc_reg = addr as usize;
     }
 
@@ -358,10 +531,10 @@ impl CPU{
         println!("store regs in mem");
         let reg = (bytecode >> 8) & 0xF;
         let mut address = self.address;
-        for i in 0..reg {
-            // store in memory somehow
+        for i in 0..=reg {
             self.memory.ram[address as usize] = self.registers[i as usize];
             address += 1;
+            println!("reg {} out of {}", i, reg);
         }
     }
 
@@ -378,6 +551,14 @@ struct Timer{
     count : u8
 }
 
+impl Timer{
+    pub fn update(&mut self){
+        if self.count > 0{
+            self.count -= 1;
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Memory{
     ram  : Box<[u8]>,
@@ -388,7 +569,7 @@ impl Memory{
     pub fn default() -> Self{
         Memory{
             ram : vec![0; 4096].into_boxed_slice(),
-            vram : vec![0; 64 * 32].into_boxed_slice()
+            vram : vec![0; 8 * 32].into_boxed_slice() // 32 * 64 BITS hence the small num of bytes
         }
     }
 }
@@ -413,5 +594,16 @@ impl Chip_HW{
         self.cpu.next_instruction();
     }
 
+    pub fn get_vram(&self) -> &Box<[u8]>{
+        self.cpu.get_vram()
+    }
     
+    pub fn get_changed(&self) -> bool {
+        self.cpu.get_changed()
+    }
+
+    pub fn set_key(&mut self, key_code : u8, up : u8) {
+        self.cpu.set_key(key_code, up);
+    }
+
 }
