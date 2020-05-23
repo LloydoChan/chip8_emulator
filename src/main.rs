@@ -29,20 +29,27 @@ fn init_window(context : &mut Sdl, width : u32, height : u32) -> Result<Window, 
 
 fn expand_vram(cpu : &chip8::Chip_HW, pixData : &mut [u8]){
     let numPix = HEIGHT * WIDTH;
-    let vram = cpu.get_vram();
+    let vram = cpu.hw.get_vram();
+
+    // for each bit in the vram, write 4 bytes to rgba buffer!
 
     for i in 0..HEIGHT {
         for j in 0..WIDTH{
-            // let read_offset = i * WIDTH + j;
-             let write_offset = 0;//read_offset * 4;
-            // let value = vram[read_offset as usize];
+            // get the relevant byte 
+            let read_offset = (i * WIDTH + j);
+            let write_offset = read_offset * 4;
+            let byte = vram[(read_offset / 8) as usize];
+            let shift_amount = 7 - read_offset % 8;
 
-            pixData[write_offset as usize] = 0;
-            pixData[(write_offset + 1) as usize] = 0;
-            pixData[(write_offset + 2) as usize] = 0;
-            pixData[(write_offset + 3) as usize] = 0;
+            let value = ((byte >> shift_amount) & 0x1) * 255;
+            pixData[write_offset as usize] = value;
+            pixData[(write_offset + 1) as usize] = value;
+            pixData[(write_offset + 2) as usize] = value;
+            pixData[(write_offset + 3) as usize] = value;
         }
     }
+    //panic!();
+
 }
 
 fn main() {
@@ -75,7 +82,7 @@ fn main() {
             .unwrap());
     }
 
-    myChip8.load_rom(&rom);
+    myChip8.hw.load_rom(&rom);
 
     
     // create pixel data
@@ -91,10 +98,10 @@ fn main() {
         for event in event_pump.poll_iter() {
             match event {
                 Event::KeyDown { keycode: Some(Keycode), .. } => {
-                   key_response(&mut myChip8, Keycode, 1)
+                   key_response(&mut myChip8.hw, Keycode, 1)
                 },
                 Event::KeyUp { keycode: Some(Keycode), ..} => {
-                    key_response(&mut myChip8, Keycode, 0)
+                   key_response(&mut myChip8.hw, Keycode, 0)
                 }
                 _ => {}
             }
@@ -122,7 +129,7 @@ fn load_binary<P: AsRef<Path>>(path : P) -> Box<[u8]> {
     file_buf.into_boxed_slice()
 }
 
-fn key_response(myChip8 : &mut chip8::Chip_HW, keycode : Keycode, up : u8){
+fn key_response(myChip8 : &mut chip8::hw_bundle, keycode : Keycode, up : u8){
     match keycode {
         Keycode::Num0 => myChip8.set_key(0, up),
         Keycode::Num1 => myChip8.set_key(1, up),

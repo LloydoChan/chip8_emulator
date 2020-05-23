@@ -1,7 +1,5 @@
 //chip8.rs
-use std::rc::Rc;
-
-const VF : u8 = 15;
+use crate::cpu;
 
 // memory map
 const MEM_BEGIN : u16 = 0x200;
@@ -28,523 +26,6 @@ const chip8_fontset : [u8; 80] =
   0xF0, 0x80, 0xF0, 0x80, 0x80  // F
 ];
 
-#[derive(Debug)]
-struct CPU{
-    registers : [u8; 16],
-    keys      : [u8; 16],
-    address   : u16,
-    pc_reg    : usize,
-    delayTimer : Timer,
-    soundTimer : Timer,
-    stack      : Stack,
-    memory     : Memory,
-    test       : bool
-}
-
-impl CPU{
-
-    fn new() -> Self{
-        CPU {
-            registers : [0; 16],
-            keys      : [0; 16],
-            address   : 0,
-            pc_reg    : 0x200,
-            delayTimer : Timer::default(),
-            soundTimer : Timer::default(),
-            memory     : Memory::default(),
-            stack      : Stack::default(),
-            test       : false,
-        }
-    }
-
-    pub fn load_rom(&mut self, rom : &Box<[u8]>){
-        let mut mem_start : usize = 0x200;
-        for i in 0..rom.len() {
-            self.memory.ram[mem_start] = rom[i as usize];
-            mem_start += 1;
-        }
-
-        // also load font
-        for i in 0..chip8_fontset.len() {
-            self.memory.ram[i] = chip8_fontset[i];
-        }
-    }
-
-    pub fn run(&mut self){
-        self.next_instruction();
-        self.delayTimer.update();
-        self.soundTimer.update();
-    }
-
-    // 1 for down, 0 for up
-    pub fn set_key(&mut self, key_code : u8, up: u8){
-        self.keys[key_code as usize] = up; 
-    }
-
-    pub fn get_vram(&self) -> &Box<[u8]>{
-        &self.memory.vram
-    }
-
-    pub fn get_changed(&self) -> bool {
-        self.test
-    }
-
-    fn next_instruction(&mut self){
-        let bytecode1 : u8 = self.memory.ram[self.pc_reg]; 
-        let bytecode2 : u8 = self.memory.ram[self.pc_reg + 1];
-        self.pc_reg += 2;
-
-        let bytecode = ((bytecode1 as u16) << 8) | bytecode2 as u16;
-
-        self.decode_instruction(bytecode);
-    }
-
-    fn decode_instruction(&mut self, bytecode : u16){
-        let first_nibble = (bytecode >> 12) as u8;
-
-        match first_nibble {
-            0 => self.deal_with_zero_nibble_codes(bytecode),
-            1 => self.deal_with_one_nibble_codes(bytecode),
-            2 => self.deal_with_two_nibble_codes(bytecode),
-            3 => self.deal_with_three_nibble_codes(bytecode),
-            4 => self.deal_with_four_nibble_codes(bytecode),
-            5 => self.deal_with_five_nibble_codes(bytecode),
-            6 => self.deal_with_six_nibble_codes(bytecode),
-            7 => self.deal_with_seven_nibble_codes(bytecode),
-            8 => self.deal_with_eight_nibble_codes(bytecode),
-            9 => self.deal_with_nine_nibble_codes(bytecode),
-            0xA => self.deal_with_A_nibble_codes(bytecode),
-            0xB => self.deal_with_B_nibble_codes(bytecode),
-            0xC => self.deal_with_C_nibble_codes(bytecode),
-            0xD => self.deal_with_D_nibble_codes(bytecode),
-            0xE => self.deal_with_E_nibble_codes(bytecode),
-            0xF => self.deal_with_F_nibble_codes(bytecode),
-            _ => panic!()
-        }
-    }
-
-    fn deal_with_zero_nibble_codes(&mut self, bytecode : u16){
-            let byte = bytecode & 0xFF;
-            match byte {
-                0xE0 => self.clear_screen(),
-                0xEE => self.return_from_subroutine(),
-                _ => self.call_program(bytecode)
-            }
-    }
-
-    fn deal_with_one_nibble_codes(&mut self, bytecode : u16){
-        println!("jump!");
-        let addr = bytecode & 0xFFF;
-        //println!("addr {:#x}", addr);
-        self.pc_reg = addr as usize;
-    }
-
-    fn deal_with_two_nibble_codes(&mut self, bytecode : u16){
-        //calls a subroutine!
-        println!("call a subroutine");
-        let addr = bytecode & 0xFFF;
-        // store current addr
-        self.stack.addresses[self.stack.stackpointer as usize] = self.pc_reg as u32;
-        self.stack.stackpointer += 1;
-
-        self.pc_reg = addr as usize;
-    }
-
-    fn deal_with_three_nibble_codes(&mut self, bytecode : u16){
-        println!("skip next if vx == nn");
-        let reg   = (bytecode >> 8) & 0xF;
-        let value = bytecode  & 0xFF;
-        println!("reg {} has {:#x} and test against val {:#x}", reg, self.registers[reg as usize], value);
-        if self.registers[reg as usize] == value as u8 {
-            // skip!
-            self.pc_reg += 2;
-        }
-    }
-
-    fn deal_with_four_nibble_codes(&mut self, bytecode : u16){
-        println!("skip next if vx != nn");
-        let reg   = (bytecode >> 8) & 0xF;
-        let value = bytecode  & 0xFF;
-        if self.registers[reg as usize] != value as u8 {
-            // skip!
-            self.pc_reg += 2;
-        }
-    }
-
-    fn deal_with_five_nibble_codes(&mut self, bytecode : u16){
-        println!("skip if vx == vy");
-        let x = (bytecode >> 8) & 0xF;
-        let y = (bytecode >> 4) & 0xF;
-        if self.registers[x as usize] == self.registers[y as usize] {
-            // skip!
-            self.pc_reg += 2;
-        }
-    }
-
-    fn deal_with_six_nibble_codes(&mut self, bytecode : u16){
-        println!("setvx to nn {:#x}", bytecode);
-        let reg   = (bytecode >> 8) & 0xF;
-        let value = bytecode  & 0xFF;
-        self.registers[reg as usize] = value as u8;
-        println!("register {} now holds {:#x}", reg, value);
-    }
-
-    fn deal_with_seven_nibble_codes(&mut self, bytecode : u16){
-        println!("add val to register!");
-        let reg = (bytecode >> 8) & 0xF;
-        let num = bytecode & 0xFF;
-
-        self.registers[reg as usize] += num as u8;
-    }
-
-    fn deal_with_eight_nibble_codes(&mut self, bytecode : u16){
-        let last_nibble = bytecode & 0xF;
-
-        match last_nibble {
-              0 => self.assign_value(bytecode),
-              1 => self.assign_or(bytecode),
-              2 => self.assign_and(bytecode),
-              3 => self.assign_xor(bytecode),
-              4 => self.add_regs(bytecode),
-              5 => self.sub_regs(bytecode),
-              6 => self.store_and_shift(bytecode), 
-              7 => self.sub_and_store(bytecode),
-            0xE => self.store_most_and_shift(bytecode),
-            _=> panic!()
-        }
-    }
-
-    fn assign_value(&mut self, bytecode : u16){
-        println!("assign value!");
-        let x = (bytecode >> 8) & 0xF;
-        let y = (bytecode >> 4) & 0xF;
-        let valY = self.registers[y as usize];
-        self.registers[x as usize] = valY;
-    }
-
-    fn assign_or(&mut self, bytecode : u16){
-        println!("assign_or!");
-        let x = (bytecode >> 8) & 0xF;
-        let y = (bytecode >> 4) & 0xF;
-        let valX = self.registers[x as usize];
-        let valY = self.registers[y as usize];
-        self.registers[x as usize] = valX | valY;
-    }
-
-    fn assign_and(&mut self, bytecode : u16){
-        println!("assign_and!");
-        let x = (bytecode >> 8) & 0xF;
-        let y = (bytecode >> 4) & 0xF;
-        let valX = self.registers[x as usize];
-        let valY = self.registers[y as usize];
-        self.registers[x as usize] = valX & valY;
-    }
-
-    fn assign_xor(&mut self, bytecode : u16){
-        println!("assign_xor!");
-        let x = (bytecode >> 8) & 0xF;
-        let y = (bytecode >> 4) & 0xF;
-        let valX = self.registers[x as usize];
-        let valY = self.registers[y as usize];
-        self.registers[x as usize] = valX ^ valY;
-    }
-
-    fn add_regs(&mut self, bytecode : u16){
-        println!("add_regs!");
-        let x = (bytecode >> 8) & 0xF;
-        let y = (bytecode >> 4) & 0xF;
-        let valX = self.registers[x as usize];
-        let valY = self.registers[y as usize];
-
-        if valX as u16 + valY as u16 > 0xFF {
-            //panic!("carry!");
-            self.registers[x as usize] = 0xFF;
-            self.registers[VF as usize] = 1;
-        }else{
-            self.registers[x as usize] += valY;
-            self.registers[VF as usize] = 0;
-        }
-    }
-
-    fn sub_regs(&mut self, bytecode : u16){
-        println!("sub_regs!");
-        let x = (bytecode >> 8) & 0xF;
-        let y = (bytecode >> 4) & 0xF;
-        let valX = self.registers[x as usize];
-        let valY = self.registers[y as usize];
-
-        if (valX as i16 - valY as i16) < 0 {
-            panic!("borrow!");
-            self.registers[x as usize] = 0x0;
-            self.registers[VF as usize] = 0;
-        }else{
-            self.registers[x as usize] -= valY;
-            self.registers[VF as usize] = 1;
-        }
-    }
-
-    fn store_and_shift(&mut self, bytecode : u16){
-        println!("store_and_shift!");
-        let reg = (bytecode >> 8) & 0xF;
-        let val = self.registers[reg as usize];
-        self.registers[15] = (val & 0x1);
-        self.registers[reg as usize] = val >> 1;
-    }
-
-    fn sub_and_store(&mut self, bytecode : u16){
-        println!("sub_and_store!");
-        panic!();
-    }
-
-    fn store_most_and_shift(&mut self, bytecode : u16){
-        println!("store_most_and_shift!");
-        let reg = (bytecode >> 8) & 0xF;
-        let val = self.registers[reg as usize];
-        self.registers[15] = (val & 0x80);
-        self.registers[reg as usize] = val << 1;
-    }
-            
-    fn deal_with_nine_nibble_codes(&mut self, bytecode : u16){
-        println!("deal_with_nine_nibble_codes!");
-        let x = (bytecode >> 8) & 0xF;
-        let y = (bytecode >> 4) & 0xF;
-
-        let xVal = self.registers[x as usize];
-        let yVal = self.registers[y as usize];
-
-        if xVal != yVal {
-            self.pc_reg += 2;
-        }
-    }
-
-    fn deal_with_A_nibble_codes(&mut self, bytecode : u16){
-        println!("I to nnn");
-        let addr   = bytecode & 0xFFF;
-        self.address = addr;
-    }
-
-    fn deal_with_B_nibble_codes(&mut self, bytecode : u16){
-        println!("jump to address NNN");
-        let nnn = bytecode & 0xFFF;
-        let addr = nnn + self.registers[0 as usize] as u16;
-        self.pc_reg = addr as usize;
-    }
-
-    fn deal_with_C_nibble_codes(&mut self, bytecode : u16){
-        // todo
-        panic!();
-    }
-
-    fn deal_with_D_nibble_codes(&mut self, bytecode : u16){
-        println!("draw sprite");
-        let x = (bytecode >> 8) & 0xF;
-        let y = (bytecode >> 4) & 0xF;
-        let height = bytecode & 0xF;
-        
-        let mut start_address = self.address;
-
-        // get x 0ffset
-        let x_offset = x % 8;
-        let x_start = x >> 3;
-
-        let mut start_offset = y * 8 + x_start;
-        println!("{}", y);
-        let mut flipped = false;
-
-        for y in 0..height {
-            // xor the address val with the video ram
-            // get address value
-            let orig_byte = self.memory.ram[start_address as usize];
-            // create mask
-            let first_byte_source = orig_byte >> x_offset;
-            let second_byte_source = orig_byte << (8 - x_offset);
-
-            let first_byte_video = self.memory.vram[start_offset as usize];
-            let second_byte_video = self.memory.vram[(start_offset + 1) as usize];
-
-            self.memory.vram[start_offset as usize] ^= first_byte_source;            
-            self.memory.vram[(start_offset + 1) as usize] ^= second_byte_source; 
-
-            if self.memory.vram[start_offset as usize] != first_byte_video ||
-               self.memory.vram[(start_offset + 1) as usize] != second_byte_video {
-                   flipped = true;
-            }
-
-            start_offset += 8;
-            start_address += 1;
-        }
-
-        if flipped {
-            self.registers[VF as usize] = 1;
-        }else{
-            self.registers[VF as usize] = 0;
-        }
-
-    }
-
-    fn deal_with_E_nibble_codes(&mut self, bytecode : u16){
-        let byte = bytecode & 0xFF;
-        match byte{
-            0x9E => self.skip_instruction_if_key_pressed(bytecode),
-            0xA1 => self.skip_instruction_if_key_not_pressed(bytecode),
-            _=> panic!()
-        }
-    }
-
-    fn deal_with_F_nibble_codes(&mut self, bytecode : u16){
-        // depends on last byte
-        println!("f nibble {:#x}", bytecode);
-        let byte = bytecode & 0xFF;
-        match byte{
-            0x07 => self.set_reg_to_delay(bytecode),
-               0x0A => self.await_key_press(bytecode),
-               0x15 => self.set_delay_timer(bytecode),
-               0x18 => self.set_sound_timer(bytecode),
-               0x1E => self.add_vx_to_i(bytecode),
-               0x29 => self.set_sprite_loc(bytecode),
-               0x33 => self.set_BCD(bytecode),
-            0x55 => self.store_regs_in_memory(bytecode),
-            0x65 => self.fill_regs(bytecode),
-            _=> panic!()
-        }
-    }
-
-    fn await_key_press(&mut self, bytecode : u16){
-        println!("await keypress");
-        panic!();
-    }
-
-    fn set_BCD(&mut self, bytecode : u16){
-        println!("set BCD!");
-        let reg = (bytecode >> 8) & 0xF;
-        let mut value = self.registers[reg as usize];
-        let hundreds = value / 100;
-        value = value - hundreds * 100;
-        let mut address = self.address;
-        self.memory.ram[address as usize] = value;
-        address += 1;
-        let tens = value / 10;
-        self.memory.ram[address as usize] = tens;
-        address += 1;
-        value = value - tens * 10;
-        let digit = value;
-        self.memory.ram[address as usize] = digit;
-        panic!();
-    }
-
-    fn set_delay_timer(&mut self, bytecode: u16){
-        println!("set sound timer");
-        let reg = (bytecode >> 8) & 0xF;
-        self.delayTimer.count = self.registers[reg as usize];
-    }
-
-    fn set_sound_timer(&mut self, bytecode: u16){
-        println!("set sound timer");
-        let reg = (bytecode >> 8) & 0xF;
-        self.soundTimer.count = self.registers[reg as usize];
-    }
-
-    fn set_sprite_loc(&mut self, bytecode : u16){
-        println!("set sprite location");
-        let reg = (bytecode >> 8) & 0xF;
-        let character = self.registers[reg as usize];
-        self.address = (character * 0x5) as u16;
-    }
-
-    fn fill_regs(&mut self, bytecode : u16){
-        println!("fill regs! {:#x}", bytecode);
-        let end = (bytecode >> 8) & 0xF;
-        let mut addr = self.address;
-        for i in 0..=end {
-            self.registers[i as usize] = self.memory.ram[addr as usize];
-            addr += 1;
-            println!("reg {} out of {}", i, end);
-        }
-    }
-
-    fn add_vx_to_i(&mut self, bytecode : u16){
-        println!("add vx to i");
-        let reg = (bytecode >> 8) & 0xF;
-        let val = self.registers[reg as usize];
-
-        self.address += (val as u16);
-
-        if self.address > 0xFFF {
-            println!("carry");
-            self.registers[15 as usize] = 1;
-        }else{
-            println!("no carry");
-            self.registers[15 as usize] = 0;
-        }
-    }
-
-    fn call_program(&mut self, bytecode : u16){
-        println!("call program at addr {:#x}", bytecode & 0xFFF);
-        panic!();
-    }
-
-    fn clear_screen(&mut self) {
-        println!("clear screen!");
-        let num_bytes = 8 * 4;
-        for i in 0..num_bytes {
-            self.memory.vram[i as usize] = 0;
-        }
-    }
-
-    fn skip_instruction_if_key_pressed(&mut self, bytecode: u16){
-        println!("skip instruction if key pressed!");
-        let reg = (bytecode >> 8) & 0xF;
-        let keyStored = self.registers[reg as usize];
-        if self.keys[keyStored as usize] == 1 {
-            self.pc_reg += 2;
-        }
-        println!("key {}!", reg);
-        //check key val
-    }
-
-    fn skip_instruction_if_key_not_pressed(&mut self, bytecode: u16){
-        println!("skip instruction if key not pressed!");
-
-        let reg = (bytecode >> 8) & 0xF;
-        let keyStored = self.registers[reg as usize];
-        if self.keys[keyStored as usize] == 0 {
-            println!("skipping");
-            self.pc_reg += 2;
-        }
-        println!("key {}!", reg);
-    }
-
-    fn return_from_subroutine(&mut self) {
-        // get address from stack pointer
-        println!("return from subroutine");
-        self.stack.stackpointer -= 1;
-        let addr = self.stack.addresses[self.stack.stackpointer as usize];
-        self.pc_reg = addr as usize;
-    }
-
-    fn set_reg_to_delay(&mut self, bytecode : u16){
-        let reg = (bytecode >> 8) & 0xF;
-        self.registers[reg as usize] = self.delayTimer.count;
-    }
-
-    fn store_regs_in_memory(&mut self, bytecode : u16){
-        println!("store regs in mem");
-        let reg = (bytecode >> 8) & 0xF;
-        let mut address = self.address;
-        for i in 0..=reg {
-            self.memory.ram[address as usize] = self.registers[i as usize];
-            address += 1;
-            println!("reg {} out of {}", i, reg);
-        }
-    }
-
-}
-
-#[derive(Debug, Default)]
-struct Stack{
-    addresses : [u32; 16],
-    stackpointer : u8
-}
 
 #[derive(Debug, Default)]
 struct Timer{
@@ -555,6 +36,10 @@ impl Timer{
     pub fn update(&mut self){
         if self.count > 0{
             self.count -= 1;
+
+            if(self.count == 0){
+                println!("timer triggered!");
+            }
         }
     }
 }
@@ -574,36 +59,110 @@ impl Memory{
     }
 }
 
+#[derive(Debug, Default)]
+pub struct hw_bundle{
+    delayTimer : Timer,
+    soundTimer : Timer,
+    memory     : Memory,
+    keys       : [u8; 16],
+}
+
+impl hw_bundle {
+
+    pub fn default() -> Self{
+        hw_bundle{
+            delayTimer : Timer::default(),
+            soundTimer : Timer::default(),
+            memory     : Memory::default(),
+            keys       : [0; 16],
+        }
+    }
+
+     // 1 for down, 0 for up
+    pub fn set_key(&mut self, key_code : u8, up: u8){
+        self.keys[key_code as usize] = up; 
+    }
+
+    pub fn get_vram(&self) -> &Box<[u8]>{
+        &self.memory.vram
+    }
+
+    pub fn read_ram_value(&self, address: usize) -> u8{
+        self.memory.ram[address]
+    }
+
+    pub fn write_ram_value(&mut self, address: usize, value : u8){
+        self.memory.ram[address] = value;
+    }
+
+    pub fn xor_vram_value(&mut self, address: usize, value: u8){
+        self.memory.vram[address] ^= value;
+    }
+
+    pub fn read_vram_value(&self, address: usize) -> u8{
+        self.memory.vram[address]
+    }
+
+    pub fn write_vram_value(&mut self, address: usize, value : u8){
+        self.memory.vram[address] = value;
+    }
+
+    pub fn get_delay_timer_count(&self) -> u8 {
+        self.delayTimer.count
+    }
+
+    pub fn get_sound_timer_count(&self) -> u8 {
+        self.soundTimer.count
+    }
+
+    pub fn set_delay_timer_count(&mut self, value : u8) {
+        self.delayTimer.count = value;
+    }
+
+    pub fn set_sound_timer_count(&mut self, value : u8) {
+        self.soundTimer.count = value;
+    }
+
+    pub fn read_key(&self, key : usize) -> u8 {
+        self.keys[key]
+    }
+
+    pub fn load_rom(&mut self, rom : &Box<[u8]>){
+        let mut mem_start : usize = 0x200;
+        println!("{}", rom.len());
+        for i in 0..rom.len() {
+            self.memory.ram[mem_start] = rom[i as usize];
+            mem_start += 1;
+        }
+
+        // also load font
+        for i in 0..chip8_fontset.len() {
+            self.memory.ram[i] = chip8_fontset[i];
+        }
+    }
+
+    pub fn run(&mut self){
+        self.delayTimer.update();
+        self.soundTimer.update();
+    }
+}
+
 #[derive(Debug)]
 pub struct Chip_HW{
-    cpu : CPU,
+    cpu        : cpu::CPU,
+    pub hw         : hw_bundle
 }
 
 impl Chip_HW{
     pub fn new( ) -> Self{
         Chip_HW{
-            cpu : CPU::new(),
+            cpu     : cpu::CPU::new(),
+            hw      : hw_bundle::default()
         }
     }
 
-    pub fn load_rom(&mut self, rom : &Box<[u8]>){
-        self.cpu.load_rom(rom);
-    }
-
     pub fn run(&mut self){
-        self.cpu.next_instruction();
+        self.cpu.next_instruction(&mut self.hw);
+        self.hw.run();
     }
-
-    pub fn get_vram(&self) -> &Box<[u8]>{
-        self.cpu.get_vram()
-    }
-    
-    pub fn get_changed(&self) -> bool {
-        self.cpu.get_changed()
-    }
-
-    pub fn set_key(&mut self, key_code : u8, up : u8) {
-        self.cpu.set_key(key_code, up);
-    }
-
 }
