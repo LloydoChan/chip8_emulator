@@ -10,6 +10,7 @@ pub struct CPU{
     address   : usize,
     pc_reg    : usize,
     stack     : Stack,
+    halt      : bool
 }
 
 #[derive(Debug, Default)]
@@ -25,18 +26,21 @@ impl CPU{
             registers : [0; 16],
             address   : 0,
             pc_reg    : 0x200,
-            stack     : Stack::default()
+            stack     : Stack::default(),
+            halt      : false
         }
     }
 
     pub fn next_instruction(&mut self, chip : &mut hw_bundle){
         let bytecode1 : u8 = chip.read_ram_value(self.pc_reg); 
         let bytecode2 : u8 = chip.read_ram_value(self.pc_reg + 1 as usize);
-        self.pc_reg += 2;
-
         let bytecode = ((bytecode1 as u16) << 8) | bytecode2 as u16;
 
         self.decode_instruction(bytecode, chip);
+
+        if !self.halt{
+            self.pc_reg += 2;
+        } 
     }
 
     fn decode_instruction(&mut self, bytecode : u16, chip : &mut hw_bundle){
@@ -175,8 +179,9 @@ impl CPU{
         }
         let reg = (bytecode >> 8) & 0xF;
         let num = bytecode & 0xFF;
+        let value = (self.registers[reg as usize] as u16 + num) & 0xFF;
 
-        self.registers[reg as usize] += num as u8;
+        self.registers[reg as usize] = value as u8;
     }
 
     fn deal_with_eight_nibble_codes(&mut self, bytecode : u16){
@@ -283,7 +288,7 @@ impl CPU{
         let val = self.registers[reg as usize];
         self.registers[15] = (val & 0x1);
         self.registers[reg as usize] = val >> 1;
-        panic!();
+        //panic!();
     }
 
     fn sub_and_store(&mut self, bytecode : u16){
@@ -333,8 +338,10 @@ impl CPU{
     }
 
     fn deal_with_C_nibble_codes(&mut self, bytecode : u16){
-        // todo
-        panic!();
+        let kk = bytecode & 0xFF;
+        let reg = (bytecode >> 8) & 0xF;
+        let rand = 128;
+        self.registers[reg as usize] = (kk & rand) as u8;
     }
 
     fn deal_with_D_nibble_codes(&mut self, bytecode : u16, chip : &mut hw_bundle){
@@ -347,8 +354,6 @@ impl CPU{
         let x = self.registers[vx as usize];
         let y = self.registers[vy as usize];
 
-        //println!("{} {}", x, y);
-
         let height = bytecode & 0xF;
         let mut start_address = self.address;
 
@@ -356,10 +361,7 @@ impl CPU{
         let x_offset = x % 8;
         let x_start = x / 8;
 
-        //println!("{} {}", x_offset, x_start);
-
-        let mut start_offset = y * 8 + x_start;
-        //println!("{:#x}", start_offset);
+        let mut start_offset = (y * 8 + x_start) as usize;
         let mut flipped = false;
 
         for i in 0..height {
@@ -370,7 +372,11 @@ impl CPU{
 
             // create mask
             let first_byte_source = orig_byte >> x_offset;
-            let second_byte_source = orig_byte << (8 - x_offset);
+            let mut second_byte_source = 0x00; 
+            
+            if x_offset != 0{
+                second_byte_source = orig_byte << (8 - x_offset);
+            }
 
             let first_byte_video = chip.read_ram_value(start_offset as usize);
             let second_byte_video = chip.read_ram_value((start_offset + 1) as usize);
@@ -430,8 +436,23 @@ impl CPU{
     }
 
     fn await_key_press(&mut self, bytecode : u16,  chip : &mut hw_bundle){
-        println!("await keypress");
-        panic!();
+        //println!("await keypress");
+
+        if !self.halt {
+            self.halt = true;
+        } else {
+            // is any key pressed yet?
+            //println!("check keys");
+            for i in 0..16 {
+                if chip.read_key(i as usize) != 0 {
+                    self.halt = false;
+                    let reg = bytecode >> 8 & 0xF;
+                    self.registers[reg as usize] = i;
+                    self.pc_reg += 2;
+                }
+            }
+        }
+        
     }
 
     fn set_delay_timer(&mut self, bytecode: u16, chip : &mut hw_bundle){
@@ -461,7 +482,7 @@ impl CPU{
         value = value - tens * 10;
         let digit = value;
         chip.write_ram_value(address as usize, digit);
-        panic!();
+        println!("{} {} {} {}", hundreds, tens, digit, value);
     }
 
 

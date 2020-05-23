@@ -96,11 +96,18 @@ impl hw_bundle {
     }
 
     pub fn xor_vram_value(&mut self, address: usize, value: u8){
+        if address > 255 {
+            return;
+        }
         self.memory.vram[address] ^= value;
     }
 
     pub fn read_vram_value(&self, address: usize) -> u8{
-        self.memory.vram[address]
+        if address > 255 {
+            0x00
+        }else{
+            self.memory.vram[address]
+        }
     }
 
     pub fn write_vram_value(&mut self, address: usize, value : u8){
