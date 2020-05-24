@@ -1,11 +1,14 @@
 extern crate sdl2;
 use sdl2::Sdl;
 use sdl2::video::{self, Window, WindowBuilder, WindowContext, WindowBuildError};
+use sdl2::audio::{AudioCallback, AudioSpecDesired, AudioDevice};
 use sdl2::render::{Texture, TextureCreator, WindowCanvas};
 use sdl2::pixels::{Color, PixelFormatEnum};
 use std::time::{Duration, Instant};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
+
+use Chip8::audio::{self, SquareWave};
 
 use std::env;
 use std::fs;
@@ -48,8 +51,6 @@ fn expand_vram(cpu : &chip8::Chip_HW, pixData : &mut [u8]){
             pixData[(write_offset + 3) as usize] = value;
         }
     }
-    //panic!();
-
 }
 
 fn main() {
@@ -66,6 +67,7 @@ fn main() {
 
     // do SDL init stuff
     let mut sdl_context = sdl2::init().unwrap();
+    let audio_device : AudioDevice<SquareWave> = audio::init_audio(&mut sdl_context);
     let win = init_window(&mut sdl_context, WIDTH, HEIGHT);
     let unrapped = win.unwrap();
 
@@ -90,9 +92,10 @@ fn main() {
     let mut frame_index = 0;
 
     let mut event_pump = sdl_context.event_pump().unwrap();
-
+    let mut timeTaken : u32 = 0;
     'running: loop {
         //beginning of loop
+      
         let start = Instant::now();
 
         for event in event_pump.poll_iter() {
@@ -107,7 +110,14 @@ fn main() {
             }
         }
 
-        myChip8.run();
+        myChip8.run(timeTaken);
+
+        if myChip8.hw.play_sound() {
+            audio_device.resume();
+        } else {
+            audio_device.pause();
+        }
+
         let vram = &myChip8;
         expand_vram(&vram, &mut pixData);
         let texRef = &mut frameBuffers[frame_index];
@@ -117,8 +127,16 @@ fn main() {
 
         canvas.present();
         frame_index = ( frame_index + 1 ) % 2;
+        let frameTime = start.elapsed().as_nanos();
+        //println!("nanos {}", frameTime);
+        timeTaken = frameTime as u32;
+        if(frameTime > 2_500_000){
+            continue;
+        }
 
-        ::std::thread::sleep(Duration::new(0, 16_000_000));
+        let sleepAmount = 2_500_000  - frameTime as u32;
+
+        ::std::thread::sleep(Duration::new(0, sleepAmount)); // 400 MHz freq
     };
 }
 

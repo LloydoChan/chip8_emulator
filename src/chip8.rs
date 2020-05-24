@@ -6,6 +6,8 @@ const MEM_BEGIN : u16 = 0x200;
 const DISPLAY_REFRESH : u16 = 0xF00;
 const MISC : u16 = 0xEA0;
 
+const FREQ : u32 = 16_000_000;
+
 const chip8_fontset : [u8; 80] =
 [
   0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -29,18 +31,33 @@ const chip8_fontset : [u8; 80] =
 
 #[derive(Debug, Default)]
 struct Timer{
-    count : u8
+    count : u8,
+    current_time : u32,
+    timer_complete : bool
 }
 
 impl Timer{
-    pub fn update(&mut self){
-        if self.count > 0{
-            self.count -= 1;
+    pub fn update(&mut self, deltaTime: u32){
+        self.current_time += deltaTime;
 
-            if(self.count == 0){
-                println!("timer triggered!");
+        if self.current_time > FREQ{
+            self.current_time -= FREQ;
+            if  self.count > 0{
+                self.count -= 1;
+                if self.count == 0 {
+                    println!("timer triggered!");
+                    self.timer_complete = true;
+                }
+            }else{
+                println!("timer switched off!");
+                self.timer_complete = false;
             }
         }
+    }
+
+    pub fn complete(&self) -> bool {
+        println!("check complete {}", self.timer_complete);
+        self.timer_complete
     }
 }
 
@@ -83,6 +100,10 @@ impl hw_bundle {
         self.keys[key_code as usize] = up; 
     }
 
+    pub fn play_sound(&mut self) -> bool {
+        self.soundTimer.complete()
+    }
+
     pub fn get_vram(&self) -> &Box<[u8]>{
         &self.memory.vram
     }
@@ -96,18 +117,11 @@ impl hw_bundle {
     }
 
     pub fn xor_vram_value(&mut self, address: usize, value: u8){
-        if address > 255 {
-            return;
-        }
         self.memory.vram[address] ^= value;
     }
 
     pub fn read_vram_value(&self, address: usize) -> u8{
-        if address > 255 {
-            0x00
-        }else{
             self.memory.vram[address]
-        }
     }
 
     pub fn write_vram_value(&mut self, address: usize, value : u8){
@@ -127,6 +141,7 @@ impl hw_bundle {
     }
 
     pub fn set_sound_timer_count(&mut self, value : u8) {
+        println!("set sound timer to {}", value);
         self.soundTimer.count = value;
     }
 
@@ -136,7 +151,6 @@ impl hw_bundle {
 
     pub fn load_rom(&mut self, rom : &Box<[u8]>){
         let mut mem_start : usize = 0x200;
-        println!("{}", rom.len());
         for i in 0..rom.len() {
             self.memory.ram[mem_start] = rom[i as usize];
             mem_start += 1;
@@ -148,9 +162,9 @@ impl hw_bundle {
         }
     }
 
-    pub fn run(&mut self){
-        self.delayTimer.update();
-        self.soundTimer.update();
+    pub fn run(&mut self, deltaTime: u32){
+        self.delayTimer.update(deltaTime);
+        self.soundTimer.update(deltaTime);
     }
 }
 
@@ -168,8 +182,8 @@ impl Chip_HW{
         }
     }
 
-    pub fn run(&mut self){
+    pub fn run(&mut self, deltaTime: u32){
         self.cpu.next_instruction(&mut self.hw);
-        self.hw.run();
+        self.hw.run(deltaTime);
     }
 }

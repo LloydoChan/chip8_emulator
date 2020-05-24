@@ -1,3 +1,6 @@
+extern crate rand; // 0.6.5
+
+use rand::Rng;
 use crate::chip8::hw_bundle;
 
 const VF : usize = 15;
@@ -19,6 +22,22 @@ struct Stack{
     stackpointer : u8
 }
 
+fn get_low_byte(bytecode: u8) -> u8 {
+   ( bytecode >> 8 ) & 0xFF
+}
+
+fn count_bits(mut bytecode : u8) -> u8 {
+    let mut num_bits = 0;
+
+    for _ in 0..8 {
+        let bit = bytecode & 0x1;
+        num_bits += bit;
+        bytecode >>= 1;
+    }
+
+    num_bits
+}
+
 impl CPU{
 
     pub fn new() -> Self{
@@ -36,8 +55,9 @@ impl CPU{
         let bytecode2 : u8 = chip.read_ram_value(self.pc_reg + 1 as usize);
         let bytecode = ((bytecode1 as u16) << 8) | bytecode2 as u16;
 
+        //println!("{:#x} {:#x}", self.pc_reg - 512, bytecode);
         self.decode_instruction(bytecode, chip);
-
+        
         if !self.halt{
             self.pc_reg += 2;
         } 
@@ -96,7 +116,7 @@ impl CPU{
         self.pc_reg = addr as usize;
     }
 
-    fn deal_with_one_nibble_codes(&mut self, bytecode : u16,chip : &mut hw_bundle){
+    fn deal_with_one_nibble_codes(&mut self, bytecode : u16, chip : &mut hw_bundle){
         if debugOn{
             println!("jump");
         }
@@ -107,6 +127,7 @@ impl CPU{
         }
 
         self.pc_reg = addr as usize;
+        self.pc_reg -= 2;
     }
 
     fn deal_with_two_nibble_codes(&mut self, bytecode : u16, chip : &mut hw_bundle){
@@ -120,6 +141,7 @@ impl CPU{
         self.stack.stackpointer += 1;
 
         self.pc_reg = addr as usize;
+        self.pc_reg -= 2;
     }
 
     fn deal_with_three_nibble_codes(&mut self, bytecode : u16, chip : &mut hw_bundle){
@@ -130,7 +152,7 @@ impl CPU{
         let value = bytecode  & 0xFF;
         if debugOn{
             println!("reg {} has {:#x} and test against val {:#x}", reg, self.registers[reg as usize], value);
-        }
+            }
         if self.registers[reg as usize] == value as u8 {
             // skip!
             self.pc_reg += 2;
@@ -179,9 +201,10 @@ impl CPU{
         }
         let reg = (bytecode >> 8) & 0xF;
         let num = bytecode & 0xFF;
-        let value = (self.registers[reg as usize] as u16 + num) & 0xFF;
+        let value = self.registers[reg as usize];
+        let new_value = (value as u16 + num) & 0xFF;
 
-        self.registers[reg as usize] = value as u8;
+        self.registers[reg as usize] = new_value as u8;
     }
 
     fn deal_with_eight_nibble_codes(&mut self, bytecode : u16){
@@ -271,11 +294,11 @@ impl CPU{
         let valX = self.registers[x as usize];
         let valY = self.registers[y as usize];
 
-        if valX < valY {
-            self.registers[x as usize] = valY - valX;
+        self.registers[x as usize] = valX.wrapping_sub(valY);
+
+        if valX > valY {
             self.registers[VF as usize] = 1;
-        }else{
-            self.registers[x as usize] -= valY;
+        } else {
             self.registers[VF as usize] = 0;
         }
     }
@@ -287,13 +310,25 @@ impl CPU{
         let reg = (bytecode >> 8) & 0xF;
         let val = self.registers[reg as usize];
         self.registers[15] = (val & 0x1);
+        println!("{:#x}", val & 0x1);
         self.registers[reg as usize] = val >> 1;
         //panic!();
     }
 
     fn sub_and_store(&mut self, bytecode : u16){
         println!("sub_and_store!");
-        panic!();
+        let x = (bytecode >> 8) & 0xF;
+        let y = (bytecode >> 4) & 0xF;
+        let valX = self.registers[x as usize];
+        let valY = self.registers[y as usize];
+
+        self.registers[x as usize] = valY.wrapping_sub(valX);
+
+        if valY > valX {
+            self.registers[VF as usize] = 1;
+        } else {
+            self.registers[VF as usize] = 0;
+        }
     }
 
     fn store_most_and_shift(&mut self, bytecode : u16){
@@ -302,7 +337,7 @@ impl CPU{
         let val = self.registers[reg as usize];
         self.registers[15] = (val & 0x80);
         self.registers[reg as usize] = val << 1;
-        panic!();
+        //panic!();
     }
             
     fn deal_with_nine_nibble_codes(&mut self, bytecode : u16, chip : &mut hw_bundle){
@@ -340,7 +375,7 @@ impl CPU{
     fn deal_with_C_nibble_codes(&mut self, bytecode : u16){
         let kk = bytecode & 0xFF;
         let reg = (bytecode >> 8) & 0xF;
-        let rand = 128;
+        let rand = rand::thread_rng().gen_range(0,255);
         self.registers[reg as usize] = (kk & rand) as u8;
     }
 
@@ -368,32 +403,41 @@ impl CPU{
 
             // xor the address val with the video ram
             // get address value that we want to copy from RAM
-            let orig_byte = chip.read_ram_value(start_address as usize);
-
+            let source_byte = chip.read_ram_value(start_address as usize);
             // create mask
-            let first_byte_source = orig_byte >> x_offset;
-            let mut second_byte_source = 0x00; 
+            let first_source_mask = source_byte >> x_offset;
+            let mut second_source_mask = 0x00; 
             
             if x_offset != 0{
-                second_byte_source = orig_byte << (8 - x_offset);
+                second_source_mask = source_byte << (8 - x_offset);
+            }
+            let mut second_byte_offset = start_offset + 1;
+
+            if start_offset >= 7 && (start_offset - 7) % 8 == 0 {
+                println!("{}", start_offset);
+                second_byte_offset -= 8;
             }
 
-            let first_byte_video = chip.read_ram_value(start_offset as usize);
-            let second_byte_video = chip.read_ram_value((start_offset + 1) as usize);
+            let first_byte_video = chip.read_vram_value(start_offset as usize);
+            let second_byte_video = chip.read_vram_value(second_byte_offset as usize);
 
-            chip.xor_vram_value(start_offset as usize, first_byte_source);
-            chip.xor_vram_value((start_offset + 1) as usize, second_byte_source);
+            chip.xor_vram_value(start_offset as usize, first_source_mask);
+            chip.xor_vram_value(second_byte_offset as usize, second_source_mask);
 
             let new_vram_value_one = chip.read_vram_value(start_offset as usize);
-            let new_vram_value_two = chip.read_vram_value((start_offset + 1) as usize);
+            let new_vram_value_two = chip.read_vram_value(second_byte_offset as usize);
 
-            if new_vram_value_one != first_byte_video ||
-               new_vram_value_two != second_byte_video {
+            if count_bits(first_byte_video) > count_bits(new_vram_value_one) ||
+               count_bits(second_byte_video) > count_bits(new_vram_value_two) {
                    flipped = true;
             }
 
             start_offset += 8;
             start_address += 1;
+
+            if(start_offset > 255) {
+                start_offset -= 255;
+            }
         }
 
         if flipped {
@@ -448,7 +492,6 @@ impl CPU{
                     self.halt = false;
                     let reg = bytecode >> 8 & 0xF;
                     self.registers[reg as usize] = i;
-                    self.pc_reg += 2;
                 }
             }
         }
@@ -456,7 +499,7 @@ impl CPU{
     }
 
     fn set_delay_timer(&mut self, bytecode: u16, chip : &mut hw_bundle){
-        println!("set sound timer");
+        println!("set delay timer");
         let reg = (bytecode >> 8) & 0xF;
         chip.set_delay_timer_count( self.registers[reg as usize]);
     }

@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 sdl2 = { version = "0.34.0", features = ["bundled", "static-link"] }
+rand = "0.6.5"
