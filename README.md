@@ -22,3 +22,5 @@ Licensed under either of
     MIT license (LICENSE-MIT or http://opensource.org/licenses/MIT)
 
 at your option.
+
+Oh and of course, SDL comes under it's own license but cargo will download and take care of that for you, there's no "source" here and I do not claim to contribute to nor own SDL at all!
