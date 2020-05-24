@@ -9,10 +9,12 @@ add a dissasembler mode, present the dissasembly in a second window
 add debugger functions, like being able to break at any point and set breakpoints
 
 For more information on chip 8 the below links are very good!
+<list>
 https://en.wikipedia.org/wiki/CHIP-8
 http://www.multigesture.net/articles/how-to-write-an-emulator-chip-8-interpreter/
 http://devernay.free.fr/hacks/chip8/C8TECH10.HTM
 http://mattmik.com/files/chip8/mastering/chip8.html
+</list>
 
 Licensed under either of
 
